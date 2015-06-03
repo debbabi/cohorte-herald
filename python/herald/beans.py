@@ -40,6 +40,7 @@ import functools
 import threading
 import time
 import uuid
+import json
 
 # ------------------------------------------------------------------------------
 
@@ -400,24 +401,105 @@ class Message(object):
     """
     Represents a message to be sent
     """
-    def __init__(self, subject, content=None):
+    def __init__(self, target_id, target_type, subject, content=None,
+                 sender_uid=None, send_mode=None, replies_to=None):
         """
         Sets up members
-
+        
+        :param target_id: Target of the message (peer uid or group name)
+        :param target_type: Type of the target (peer or group)
         :param subject: Subject of the message
         :param content: Content of the message (optional)
+        :param sender_uid: UID of the peer sender of the message
+        :param send_mode: sending mode (fire, post, send)
+        :param replies_to: UID of the message that triggered this one as response (send mode).        
         """
-        self._uid = str(uuid.uuid4()).replace('-', '').upper()
-        self._timestamp = int(time.time() * 1000)
+        # set herald specification version
+        self._herald_version = HERALD_SPECIFICATION_VERSION        
+        
+        # init headers
+        self._headers = {}
+        self._headers[MESSAGE_HEADER_UID] = str(uuid.uuid4()).replace('-', '').upper()
+        self._headers[MESSAGE_HEADER_TIMESTAMP] = int(time.time() * 1000)        
+        self._headers[MESSAGE_HEADER_SENDER_UID] = sender_uid
+        self._headers[MESSAGE_HEADER_SEND_MODE] = send_mode
+        self._headers[MESSAGE_HEADER_REPLIES_TO] = replies_to
+        
+        # init target. e.g., peer:1234567890 or group:all        
+        self._target = "{0}:{1}".format(target_type, target)
+        
+        # init subject
         self._subject = subject
+        
+        # init content
         self._content = content
+        
+        # extra information
+        self._extra = {}
+            
 
     def __str__(self):
         """
         String representation
         """
-        return "{0} ({1})".format(self._subject, self._uid)
+        return "{0} ({1})".format(self._subject, self.headers[MESSAGE_UID])
 
+    @property
+    def uid(self):
+        """
+        Message UID
+        """
+        return self._headers[MESSAGE_HEADER_UID]
+        
+    @property
+    def timestamp(self):
+        """
+        Time stamp of the message
+        """
+        return self._headers[MESSAGE_HEADER_TIMESTAMP]
+    
+    @property
+    def sender(self):
+        """
+        Sender Peer UID
+        """
+        return self._headers[MESSAGE_HEADER_UID]
+        
+    @property
+    def send_mode(self):
+        """
+        Send mode
+        """
+        return self._headers[MESSAGE_HEADER_SEND_MODE]    
+
+    @property
+    def replies_to(self):
+        """
+        UID of Peer to be replyed
+        """
+        return self._headers[MESSAGE_HEADER_REPLIES_TO] 
+        
+    @Property
+    def target(self):
+        """
+        The target of the message (peer:<uid> or group:<name>)
+        """
+        return self._target
+
+    @Property
+    def target_id(self):
+        """
+        The id of the target of the message (<uid> or <group_name>)
+        """
+        return self._target.split(":")[0]
+    
+    @Property
+    def target_type(self):
+        """
+        The type of the target of the message (peer or group)
+        """
+        return self._target.split(":")[1]
+    
     @property
     def subject(self):
         """
@@ -432,46 +514,111 @@ class Message(object):
         """
         return self._content
 
-    @property
-    def timestamp(self):
-        """
-        Time stamp of the message
-        """
-        return self._timestamp
+   def get_extra(self, key):
+       """
+       Return extra info
+       """
+       return self._extra[key]
 
-    @property
-    def uid(self):
+    
+    @Staticmethod
+    def fromJSON(json_message):
         """
-        Message UID
+        Returns a new Message from the provided json_message
         """
-        return self._uid
+        # parse the provided json_message
+        try:
+            parsed_msg = json.loads(json_message)
+        except ValueError as ex:            
+            # if the provided json_message is not a valid JSON
+            return None
+        except TypeError as ex:
+            # if json_message not string or buffer
+            return None
+        # check if it is a valid Herald JSON message
+        if MESSAGE_HERALD_VERSION not in parsed_msg:
+            # throw exception, not valid Herald message!
+            return None
+            
+        # construct new Message object from the provided JSON object      
+        msg_target = parsed_msg[MESSAGE_TARGET].split(":")[0]
+        msg_target_type = parsed_msg[MESSAGE_TARGET].split(":")[1]       
+        msg = Message(target=msg_target,
+                      target_type=msg_target_type,
+                      subject=parsed_msg[MESSAGE_SUBJECT],
+                      content=parsed_msg[MESSAGE_CONTENT])
+        # retrieve headers
+        msg._headers[MESSAGE_HEADER_UID] = parsed_msg[MESSAGE_HEADERS][MESSAGE_HEADER_UID]
+        msg._headers[MESSAGE_HEADER_TIMESTAMP] = parsed_msg[MESSAGE_HEADERS][MESSAGE_HEADER_TIMESTAMP]
+        msg._headers[MESSAGE_HEADER_SENDER_UID] = parsed_msg[MESSAGE_HEADERS][MESSAGE_HEADER_SENDER_UID]
+        msg._headers[MESSAGE_HEADER_SEND_MODE] = parsed_msg[MESSAGE_HEADERS][MESSAGE_HEADER_SEND_MODE]
+        msg._headers[MESSAGE_HEADER_REPLIES_TO] = parsed_msg[MESSAGE_HEADERS][MESSAGE_HEADER_REPLIES_TO] 
+        # extra info
+        msg._extra = parsed_msg[MESSAGE_EXTRA]        
+        return msg
+        
+    @Staticmethod    
+    def fromRAW(raw_message):
+        """
+        Returns a new Message from the provided raw_message
+        """
+        pass
+        
+    def toJSON(self):
+        """
+        Returns a JSON representation of this message
+        """
+        result = {}
+        # Herald specification version
+        result[MESSAGE_HERALD_VERSION] = self._herald_version
+        # all other provided headers which are not supported are not included in final JSON object
+        result[MESSAGE_HEADERS] = {}
+        result[MESSAGE_HEADERS][MESSAGE_HEADER_UID] = self._headers[MESSAGE_HEADER_UID]
+        result[MESSAGE_HEADERS][MESSAGE_HEADER_TIMESTAMP] = self._headers[MESSAGE_HEADER_TIMESTAMP]
+        result[MESSAGE_HEADERS][MESSAGE_HEADER_SENDER_UID] = self._headers[MESSAGE_HEADER_SENDER_UID]
+        result[MESSAGE_HEADERS][MESSAGE_HEADER_SEND_MODE] = self._headers[MESSAGE_HEADER_SEND_MODE]
+        result[MESSAGE_HEADERS][MESSAGE_HEADER_REPLIES_TO] = self._headers[MESSAGE_HEADER_REPLIES_TO]
+        # basic infos
+        result[MESSAGE_TARGET] = self._target
+        result[MESSAGE_TARGET_TYPE] = self._target
+        result[MESSAGE_SUBJECT] = self._subject
+        result[MESSAGE_CONTENT] = self._content
+        # all provided extra entries are included
+        result[MESSAGE_EXTRA] = self._extra
+        # creates the JSON object and return it
+        return json.dumps(result)
+        
+    def toRAW(self):
+        """
+        Returns a RAW object of this message
+        """
+        pass
 
 
 class MessageReceived(Message):
     """
     Represents a message received by a transport
     """
-    def __init__(self, uid, subject, content, sender_uid, reply_to, access,
-                 timestamp=None, extra=None):
+    def __init__(self, target_id, target_type, subject, content=None,
+                 sender_uid=None, send_mode=None, replies_to=None,
+                 uid=None, timestamp=None, access=None, replied=None):
         """
         Sets up the bean
 
         :param uid: Message UID
-        :param subject: Subject of the message
-        :param content: Content of the message
-        :param sender_uid: UID of the sending peer
-        :param reply_to: UID of the message this one replies to
-        :param access: Access ID of the transport which received this message
         :param timestamp: Message sending time stamp
-        :param extra: Extra configuration for the transport in case of reply
+        :param access: Access ID of the transport which received this message
+        :param replied: a tag indicating if this message was replied (sent to trigger peer)
         """
-        Message.__init__(self, subject, content)
+        Message.__init__(self, target_id, target_type, subject, content,
+                 sender_uid, send_mode, replies_to)
+        # set the same UID and timestap as the original message
         self._uid = uid
-        self._sender = sender_uid
-        self._reply_to = reply_to
-        self._access = access
-        self._extra = extra
         self._timestamp = timestamp
+        # set headers related to the received message
+        self._headers[MESSAGE_HEADER_ACCESS] = access
+        self._headers[MESSAGE_HEADER_REPLIED] = replied
+
 
     def __str__(self):
         """
@@ -485,7 +632,7 @@ class MessageReceived(Message):
         """
         Returns the access ID of the transport which received this message
         """
-        return self._access
+        return self._headers[MESSAGE_HEADER_ACCESS]
 
     @property
     def reply_to(self):
@@ -501,6 +648,9 @@ class MessageReceived(Message):
         """
         return self._sender
 
+    """
+    @depricated!
+    """
     @property
     def extra(self):
         """
